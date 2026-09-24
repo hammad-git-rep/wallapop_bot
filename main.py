@@ -4,20 +4,14 @@ import threading
 from flask import Flask
 from curl_cffi import requests
 
-# 1. Webserver for Render Keep-Alive
+# 1. Flask App Setup
 app = Flask(__name__)
 
 @app.route('/')
 def health():
     return "Wallapop Engine Active", 200
 
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
-
-threading.Thread(target=run_web, daemon=True).start()
-
-# 2. Config
+# 2. Configuration & Credentials
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 PROXY_URL = os.environ.get("PROXY_URL")
@@ -65,7 +59,6 @@ def scrape_wallapop():
         try:
             url = f"https://api.wallapop.com/api/v3/general/search?keywords={keyword}&latitude={BARCELONA_LAT}&longitude={BARCELONA_LNG}&distance=20000&order_by=creation_date"
             
-            # Use curl_cffi with impersonate="chrome120" to bypass TLS fingerprinting
             response = requests.get(
                 url, 
                 headers=headers, 
@@ -74,7 +67,7 @@ def scrape_wallapop():
                 timeout=12
             )
             
-            print(f"Checking '{keyword}' -> Status Code: {response.status_code}")
+            print(f"Checking '{keyword}' -> Status Code: {response.status_code}", flush=True)
 
             if response.status_code == 200:
                 data = response.json()
@@ -91,23 +84,28 @@ def scrape_wallapop():
                             location = item.get("location", {}).get("city", "Barcelona")
                             
                             send_telegram_alert(title, price, item_url, location)
-                            print(f"🔥 Alert sent for: {title}")
+                            print(f"🔥 Alert sent for: {title}", flush=True)
                         
                         seen_item_ids.add(item_id)
             else:
-                print(f"Blocked or Error on '{keyword}': Status {response.status_code}")
+                print(f"Blocked or Error on '{keyword}': Status {response.status_code}", flush=True)
 
         except Exception as e:
-            print(f"Error scraping '{keyword}': {e}")
+            print(f"Error scraping '{keyword}': {e}", flush=True)
             
         time.sleep(4)
 
 def engine_loop():
-    print("Wallapop Engine Started - TLS Bypass Enabled...")
-    send_telegram_alert("TEST ALERT - iPhone 15 Pro", "500", "[https://es.wallapop.com](https://es.wallapop.com)", "Barcelona")
+    print("Wallapop Engine Started - TLS Bypass Enabled...", flush=True)
     while True:
         scrape_wallapop()
         time.sleep(30)
 
 if __name__ == "__main__":
-    engine_loop()
+    # Start background scraper thread FIRST
+    scraper_thread = threading.Thread(target=engine_loop, daemon=True)
+    scraper_thread.start()
+
+    # Start Flask Webserver on main thread
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
