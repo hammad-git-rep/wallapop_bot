@@ -1,5 +1,6 @@
 import os
 import time
+import random
 import threading
 import requests
 from flask import Flask
@@ -13,7 +14,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 BARCELONA_LAT = "41.3851"
 BARCELONA_LNG = "2.1734"
 
-# 12-Tier Model Matrix with exact price limits
+# Target Matrix
 TARGETS = [
     {"kw": "iphone x", "min": 40, "max": 80},
     {"kw": "iphone xr", "min": 40, "max": 90},
@@ -29,7 +30,6 @@ TARGETS = [
     {"kw": "iphone 15 pro", "min": 300, "max": 450},
 ]
 
-# Set to track seen items and prevent duplicate alerts
 SEEN_ITEMS = set()
 
 def send_telegram_alert(item, target):
@@ -38,7 +38,6 @@ def send_telegram_alert(item, target):
     item_id = item.get("id", "")
     web_slug = item.get("web_slug", "")
     
-    # Construct listing URL
     link = f"https://es.wallapop.com/item/{web_slug}" if web_slug else f"https://es.wallapop.com/item/{item_id}"
     
     message = (
@@ -64,19 +63,38 @@ def send_telegram_alert(item, target):
 
 def scrape_cycle():
     global SEEN_ITEMS
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "application/json"
-    }
+    
+    # Establish persistent session to maintain cookies & headers
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Origin": "https://es.wallapop.com",
+        "Referer": "https://es.wallapop.com/",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-site",
+        "Sec-Ch-Ua": '"Chromium";v="128", "Not=A?Brand";v="24", "Google Chrome";v="128"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"macOS"',
+        "X-DeviceOS": "WEB"
+    })
 
-    # Initial Cache Seeding Pass
+    # Initial session warm-up request
+    try:
+        session.get("https://es.wallapop.com", timeout=10)
+        time.sleep(2)
+    except Exception as e:
+        print(f"Warm-up ping failed: {e}", flush=True)
+
     print("--- Starting Initial Cache Seeding ---", flush=True)
     for target in TARGETS:
         kw = target["kw"]
         min_p = target["min"]
         max_p = target["max"]
         
-        # Fixed API parameters: distance_in_km and category_id
         url = (
             f"https://api.wallapop.com/api/v3/general/search?"
             f"keywords={kw}&latitude={BARCELONA_LAT}&longitude={BARCELONA_LNG}"
@@ -85,7 +103,7 @@ def scrape_cycle():
         )
         
         try:
-            res = requests.get(url, headers=headers, timeout=10)
+            res = session.get(url, timeout=10)
             if res.status_code == 200:
                 data = res.json()
                 items = data.get("search_objects", [])
@@ -97,13 +115,13 @@ def scrape_cycle():
         except Exception as e:
             print(f"Error seeding '{kw}': {e}", flush=True)
             
-        time.sleep(2.5)
+        time.sleep(random.uniform(2.0, 4.0))
 
     print("✅ Initial Cache Seeding Complete. Live alert monitoring is now active.", flush=True)
 
-    # Continuous Monitoring Loop
+    # Continuous Loop with randomized jitter
     while True:
-        time.sleep(15)
+        time.sleep(10)
         print("--- Starting Full Pass (12 Keywords) ---", flush=True)
         for target in TARGETS:
             kw = target["kw"]
@@ -118,7 +136,7 @@ def scrape_cycle():
             )
             
             try:
-                res = requests.get(url, headers=headers, timeout=10)
+                res = session.get(url, timeout=10)
                 if res.status_code == 200:
                     data = res.json()
                     items = data.get("search_objects", [])
@@ -134,17 +152,15 @@ def scrape_cycle():
             except Exception as e:
                 print(f"Error checking '{kw}': {e}", flush=True)
                 
-            time.sleep(2.5)
+            time.sleep(random.uniform(2.5, 4.5))
 
 @app.route('/')
 def home():
     return "Wallapop Arbitrage Engine is Live", 200
 
 if __name__ == "__main__":
-    # Start background scraper thread
     t = threading.Thread(target=scrape_cycle, daemon=True)
     t.start()
     
-    # Run Web Server
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
