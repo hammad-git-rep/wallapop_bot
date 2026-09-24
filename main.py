@@ -98,8 +98,8 @@ def scrape_wallapop():
 def engine_loop():
     print("Wallapop Engine Started - TLS Bypass Enabled...", flush=True)
     
-    # TEST ALERT TO VERIFY TELEGRAM
-    send_telegram_alert("TEST ALERT - iPhone 15 Pro", "500", "https://es.wallapop.com", "Barcelona Central")
+    # FORCED TEST PING
+    send_telegram_alert("⚡ SYSTEM TEST", "0", "https://es.wallapop.com", "Barcelona")
     
     while True:
         scrape_wallapop()
