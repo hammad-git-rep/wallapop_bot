@@ -1,17 +1,19 @@
 import os
 import time
+import json
 import random
 import threading
 from flask import Flask
-from curl_cffi import requests
+from playwright.sync_api import sync_playwright
+import requests
 
 app = Flask(__name__)
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-BARCELONA_LAT = "41.3851"
-BARCELONA_LNG = "2.1734"
+BARCELONA_LAT = 41.3851
+BARCELONA_LNG = 2.1734
 
 TARGETS = [
     {"kw": "iphone x", "min": 40, "max": 80},
@@ -28,127 +30,139 @@ TARGETS = [
     {"kw": "iphone 15 pro", "min": 300, "max": 450},
 ]
 
-SEEN_ITEMS = set()
+seen_item_ids = set()
 
-def send_telegram_alert(item, target):
-    title = item.get("title", "No Title")
-    price = item.get("price", "N/A")
-    item_id = item.get("id", "")
-    web_slug = item.get("web_slug", "")
-    
-    link = f"https://es.wallapop.com/item/{web_slug}" if web_slug else f"https://es.wallapop.com/item/{item_id}"
-    
+def log(msg):
+    print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
+def send_telegram_alert(title, price, item_url, location):
     message = (
         f"🚨 **BARCELONA DEAL DETECTED**\n\n"
         f"📱 **Item:** {title}\n"
-        f"💰 **Price:** €{price} (Target: €{target['min']}-€{target['max']})\n"
-        f"📍 **Location:** Barcelona Radius (20km)\n\n"
-        f"🔗 [Open Listing in Wallapop]({link})"
+        f"💰 **Price:** €{price}\n"
+        f"📍 **Location:** {location}\n\n"
+        f"🔗 [Open Listing in Wallapop]({item_url})"
     )
-    
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
         "parse_mode": "HTML",
         "disable_web_page_preview": False
     }
-    
     try:
-        requests.post(url, json=payload, timeout=5)
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=payload, timeout=5)
     except Exception as e:
-        print(f"Failed to send Telegram alert: {e}", flush=True)
+        log(f"Failed to send Telegram alert: {e}")
 
-def scrape_cycle():
-    global SEEN_ITEMS
-    
-    # Session using Chrome impersonation to bypass Cloudflare
-    session = requests.Session(impersonate="chrome120")
-    session.headers.update({
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
-        "Origin": "https://es.wallapop.com",
-        "Referer": "https://es.wallapop.com/",
-        "X-DeviceOS": "WEB"
-    })
+def run_playwright_scraper():
+    global seen_item_ids
+    is_seeded = False
 
-    print("--- Starting Initial Cache Seeding ---", flush=True)
-    for target in TARGETS:
-        kw = target["kw"].replace(" ", "%20")
-        min_p = target["min"]
-        max_p = target["max"]
-        
-        # Optimized query string without category restriction
-        url = (
-            f"https://api.wallapop.com/api/v3/general/search?"
-            f"keywords={kw}&latitude={BARCELONA_LAT}&longitude={BARCELONA_LNG}"
-            f"&distance_in_km=20&min_sale_price={min_p}&max_sale_price={max_p}"
-            f"&order_by=creation_date"
+    with sync_playwright() as p:
+        # Launch browser with stealth-like arguments
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-blink-features=AutomationControlled",
+            ]
         )
         
-        try:
-            res = session.get(url, timeout=10)
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            viewport={'width': 1280, 'height': 800},
+            locale="es-ES",
+            geolocation={"latitude": BARCELONA_LAT, "longitude": BARCELONA_LNG},
+            permissions=["geolocation"]
+        )
 
-print("STATUS:", res.status_code, flush=True)
-print("BODY:", res.text[:1000], flush=True)
-            if res.status_code == 200:
-                data = res.json()
-                items = data.get("search_objects", [])
-                print(f"Seeding '{target['kw']}' (€{min_p}-€{max_p}) -> Status: 200 | Items Found: {len(items)}", flush=True)
-                for item in items:
-                    SEEN_ITEMS.add(item.get("id"))
-            else:
-                print(f"Seeding '{target['kw']}' -> Status: {res.status_code}", flush=True)
-        except Exception as e:
-            print(f"Error seeding '{target['kw']}': {e}", flush=True)
-            
-        time.sleep(random.uniform(1.5, 3.0))
+        page = context.new_page()
 
-    print("✅ Initial Cache Seeding Complete. Live alert monitoring is now active.", flush=True)
+        log("--- Playwright Browser Engine Initialized ---")
 
-    while True:
-        time.sleep(10)
-        print("--- Starting Full Pass (12 Keywords) ---", flush=True)
-        for target in TARGETS:
-            kw = target["kw"].replace(" ", "%20")
-            min_p = target["min"]
-            max_p = target["max"]
-            
-            url = (
-                f"https://api.wallapop.com/api/v3/general/search?"
-                f"keywords={kw}&latitude={BARCELONA_LAT}&longitude={BARCELONA_LNG}"
-                f"&distance_in_km=20&min_sale_price={min_p}&max_sale_price={max_p}"
-                f"&order_by=creation_date"
-            )
-            
-            try:
-                res = session.get(url, timeout=10)
+        while True:
+            for target in TARGETS:
+                kw = target["kw"]
+                min_p = target["min"]
+                max_p = target["max"]
 
-print("STATUS:", res.status_code, flush=True)
-print("BODY:", res.text[:1000], flush=True)
-                if res.status_code == 200:
-                    data = res.json()
-                    items = data.get("search_objects", [])
-                    print(f"Checking '{target['kw']}' (€{min_p}-€{max_p}) -> Status: 200 | Items Found: {len(items)}", flush=True)
+                # Intercept JSON network responses triggered by browser navigation
+                latest_items = []
+
+                def handle_response(response):
+                    nonlocal latest_items
+                    if "/api/v3/general/search" in response.url and response.status == 200:
+                        try:
+                            data = response.json()
+                            items = data.get("search_objects", [])
+                            if items:
+                                latest_items = items
+                        except Exception:
+                            pass
+
+                # Attach listener
+                page.on("response", handle_response)
+
+                search_url = (
+                    f"https://es.wallapop.com/app/search?"
+                    f"keywords={kw.replace(' ', '%20')}&"
+                    f"min_sale_price={min_p}&"
+                    f"max_sale_price={max_p}&"
+                    f"latitude={BARCELONA_LAT}&"
+                    f"longitude={BARCELONA_LNG}&"
+                    f"order_by=creation_date"
+                )
+
+                try:
+                    log(f"Browsing: '{kw}' (€{min_p}-€{max_p})")
+                    page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
                     
-                    for item in items:
-                        item_id = item.get("id")
-                        if item_id and item_id not in SEEN_ITEMS:
-                            SEEN_ITEMS.add(item_id)
-                            send_telegram_alert(item, target)
-                else:
-                    print(f"Checking '{target['kw']}' -> Status: {res.status_code}", flush=True)
-            except Exception as e:
-                print(f"Error checking '{target['kw']}': {e}", flush=True)
-                
-            time.sleep(random.uniform(2.0, 4.0))
+                    # Short wait for network requests triggered by page hydration
+                    time.sleep(3.5)
+
+                    if latest_items:
+                        log(f"Intercepted {len(latest_items)} live items for '{kw}'")
+                        for item in latest_items[:5]:
+                            item_id = item.get("id")
+                            if item_id and item_id not in seen_item_ids:
+                                title = item.get("title", "No Title")
+                                price = item.get("price", "N/A")
+                                web_path = item.get("web_slug", "")
+                                item_url = f"https://es.wallapop.com/item/{web_path}" if web_path else "https://es.wallapop.com"
+                                location = item.get("location", {}).get("city", "Barcelona")
+
+                                if is_seeded:
+                                    log(f"🔥 NEW DEAL FOUND: {title} (€{price})")
+                                    send_telegram_alert(title, price, item_url, location)
+                                else:
+                                    log(f"🌱 [Seeding Cache] Recorded: {item_id} ({title})")
+
+                                seen_item_ids.add(item_id)
+                    else:
+                        log(f"⚠️ No API response intercepted for '{kw}' (possible anti-bot prompt or empty page)")
+
+                except Exception as e:
+                    log(f"Error visiting '{kw}': {e}")
+                finally:
+                    # Clean up event listener for the next target
+                    page.remove_listener("response", handle_response)
+
+                # Avoid aggressive polling
+                time.sleep(random.uniform(4.0, 7.0))
+
+            if not is_seeded:
+                is_seeded = True
+                log("✅ Cache seeding complete. Live alert monitoring is now active.")
+
+            time.sleep(15)
 
 @app.route('/')
 def home():
-    return "Wallapop Arbitrage Engine is Live", 200
+    return "Wallapop Playwright Scraper Engine Active", 200
 
 if __name__ == "__main__":
-    t = threading.Thread(target=scrape_cycle, daemon=True)
+    t = threading.Thread(target=run_playwright_scraper, daemon=True)
     t.start()
     
     port = int(os.environ.get("PORT", 10000))
