@@ -2,19 +2,17 @@ import os
 import time
 import random
 import threading
-import requests
 from flask import Flask
+from curl_cffi import requests
 
 app = Flask(__name__)
 
-# Configuration
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 BARCELONA_LAT = "41.3851"
 BARCELONA_LNG = "2.1734"
 
-# Target Matrix
 TARGETS = [
     {"kw": "iphone x", "min": 40, "max": 80},
     {"kw": "iphone xr", "min": 40, "max": 90},
@@ -64,42 +62,28 @@ def send_telegram_alert(item, target):
 def scrape_cycle():
     global SEEN_ITEMS
     
-    # Establish persistent session to maintain cookies & headers
-    session = requests.Session()
+    # Session using Chrome impersonation to bypass Cloudflare
+    session = requests.Session(impersonate="chrome120")
     session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
-        "Accept-Encoding": "gzip, deflate, br",
         "Origin": "https://es.wallapop.com",
         "Referer": "https://es.wallapop.com/",
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-site",
-        "Sec-Ch-Ua": '"Chromium";v="128", "Not=A?Brand";v="24", "Google Chrome";v="128"',
-        "Sec-Ch-Ua-Mobile": "?0",
-        "Sec-Ch-Ua-Platform": '"macOS"',
         "X-DeviceOS": "WEB"
     })
 
-    # Initial session warm-up request
-    try:
-        session.get("https://es.wallapop.com", timeout=10)
-        time.sleep(2)
-    except Exception as e:
-        print(f"Warm-up ping failed: {e}", flush=True)
-
     print("--- Starting Initial Cache Seeding ---", flush=True)
     for target in TARGETS:
-        kw = target["kw"]
+        kw = target["kw"].replace(" ", "%20")
         min_p = target["min"]
         max_p = target["max"]
         
+        # Optimized query string without category restriction
         url = (
             f"https://api.wallapop.com/api/v3/general/search?"
             f"keywords={kw}&latitude={BARCELONA_LAT}&longitude={BARCELONA_LNG}"
             f"&distance_in_km=20&min_sale_price={min_p}&max_sale_price={max_p}"
-            f"&category_id=12545&order_by=creation_date"
+            f"&order_by=creation_date"
         )
         
         try:
@@ -107,24 +91,23 @@ def scrape_cycle():
             if res.status_code == 200:
                 data = res.json()
                 items = data.get("search_objects", [])
-                print(f"Seeding '{kw}' (€{min_p}-€{max_p}) -> Status: 200 | Items Found: {len(items)}", flush=True)
+                print(f"Seeding '{target['kw']}' (€{min_p}-€{max_p}) -> Status: 200 | Items Found: {len(items)}", flush=True)
                 for item in items:
                     SEEN_ITEMS.add(item.get("id"))
             else:
-                print(f"Seeding '{kw}' -> Status: {res.status_code}", flush=True)
+                print(f"Seeding '{target['kw']}' -> Status: {res.status_code}", flush=True)
         except Exception as e:
-            print(f"Error seeding '{kw}': {e}", flush=True)
+            print(f"Error seeding '{target['kw']}': {e}", flush=True)
             
-        time.sleep(random.uniform(2.0, 4.0))
+        time.sleep(random.uniform(1.5, 3.0))
 
     print("✅ Initial Cache Seeding Complete. Live alert monitoring is now active.", flush=True)
 
-    # Continuous Loop with randomized jitter
     while True:
         time.sleep(10)
         print("--- Starting Full Pass (12 Keywords) ---", flush=True)
         for target in TARGETS:
-            kw = target["kw"]
+            kw = target["kw"].replace(" ", "%20")
             min_p = target["min"]
             max_p = target["max"]
             
@@ -132,7 +115,7 @@ def scrape_cycle():
                 f"https://api.wallapop.com/api/v3/general/search?"
                 f"keywords={kw}&latitude={BARCELONA_LAT}&longitude={BARCELONA_LNG}"
                 f"&distance_in_km=20&min_sale_price={min_p}&max_sale_price={max_p}"
-                f"&category_id=12545&order_by=creation_date"
+                f"&order_by=creation_date"
             )
             
             try:
@@ -140,7 +123,7 @@ def scrape_cycle():
                 if res.status_code == 200:
                     data = res.json()
                     items = data.get("search_objects", [])
-                    print(f"Checking '{kw}' (€{min_p}-€{max_p}) -> Status: 200 | Items Found: {len(items)}", flush=True)
+                    print(f"Checking '{target['kw']}' (€{min_p}-€{max_p}) -> Status: 200 | Items Found: {len(items)}", flush=True)
                     
                     for item in items:
                         item_id = item.get("id")
@@ -148,11 +131,11 @@ def scrape_cycle():
                             SEEN_ITEMS.add(item_id)
                             send_telegram_alert(item, target)
                 else:
-                    print(f"Checking '{kw}' -> Status: {res.status_code}", flush=True)
+                    print(f"Checking '{target['kw']}' -> Status: {res.status_code}", flush=True)
             except Exception as e:
-                print(f"Error checking '{kw}': {e}", flush=True)
+                print(f"Error checking '{target['kw']}': {e}", flush=True)
                 
-            time.sleep(random.uniform(2.5, 4.5))
+            time.sleep(random.uniform(2.0, 4.0))
 
 @app.route('/')
 def home():
