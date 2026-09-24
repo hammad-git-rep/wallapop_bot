@@ -88,6 +88,9 @@ def scrape_cycle():
         
         try:
             res = session.get(url, timeout=10)
+
+print("STATUS:", res.status_code, flush=True)
+print("BODY:", res.text[:1000], flush=True)
             if res.status_code == 200:
                 data = res.json()
                 items = data.get("search_objects", [])
@@ -120,6 +123,9 @@ def scrape_cycle():
             
             try:
                 res = session.get(url, timeout=10)
+
+print("STATUS:", res.status_code, flush=True)
+print("BODY:", res.text[:1000], flush=True)
                 if res.status_code == 200:
                     data = res.json()
                     items = data.get("search_objects", [])
