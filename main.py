@@ -4,21 +4,36 @@ import threading
 from flask import Flask
 from curl_cffi import requests
 
-# 1. Flask App Setup
+# 1. Flask App Setup (Render Keep-Alive Endpoint)
 app = Flask(__name__)
 
 @app.route('/')
 def health():
     return "Wallapop Engine Active", 200
 
-# 2. Configuration & Credentials
+# 2. Environment Configuration
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 PROXY_URL = os.environ.get("PROXY_URL")
 
 BARCELONA_LAT = "41.3851"
 BARCELONA_LNG = "2.1734"
-KEYWORDS = ["iphone 15", "macbook m1", "playstation 5"]
+
+# 3. Targeted Product Matrix with Custom Price Boundaries
+TARGET_CONFIG = [
+    {"keyword": "iphone x", "min": 40, "max": 80},
+    {"keyword": "iphone xr", "min": 40, "max": 90},
+    {"keyword": "iphone 11", "min": 60, "max": 130},
+    {"keyword": "iphone 11 pro", "min": 80, "max": 140},
+    {"keyword": "iphone 12", "min": 90, "max": 150},
+    {"keyword": "iphone 12 pro", "min": 100, "max": 170},
+    {"keyword": "iphone 13", "min": 100, "max": 180},
+    {"keyword": "iphone 13 pro", "min": 140, "max": 280},
+    {"keyword": "iphone 14", "min": 140, "max": 220},
+    {"keyword": "iphone 14 pro", "min": 250, "max": 400},
+    {"keyword": "iphone 15", "min": 240, "max": 375},
+    {"keyword": "iphone 15 pro", "min": 300, "max": 450}
+]
 
 seen_item_ids = set()
 
@@ -39,7 +54,7 @@ def send_telegram_alert(title, price, url, location):
     try:
         requests.post(tele_url, json=payload, timeout=5)
     except Exception as e:
-        print(f"Failed to send Telegram alert: {e}")
+        print(f"Failed to send Telegram alert: {e}", flush=True)
 
 def scrape_wallapop():
     proxies = None
@@ -55,9 +70,18 @@ def scrape_wallapop():
         "Referer": "https://es.wallapop.com/"
     }
 
-    for keyword in KEYWORDS:
+    for target in TARGET_CONFIG:
+        kw = target["keyword"]
+        min_p = target["min"]
+        max_p = target["max"]
+
         try:
-            url = f"https://api.wallapop.com/api/v3/general/search?keywords={keyword}&latitude={BARCELONA_LAT}&longitude={BARCELONA_LNG}&distance=20000&order_by=creation_date"
+            url = (
+                f"https://api.wallapop.com/api/v3/general/search?"
+                f"keywords={kw}&latitude={BARCELONA_LAT}&longitude={BARCELONA_LNG}"
+                f"&distance=20000&min_sale_price={min_p}&max_sale_price={max_p}"
+                f"&order_by=creation_date"
+            )
             
             response = requests.get(
                 url, 
@@ -67,13 +91,11 @@ def scrape_wallapop():
                 timeout=12
             )
             
-            print(f"Checking '{keyword}' -> Status Code: {response.status_code}", flush=True)
-
             if response.status_code == 200:
                 data = response.json()
                 items = data.get("search_objects", [])
                 
-                for item in items[:5]:
+                for item in items[:3]:
                     item_id = item.get("id")
                     if item_id and item_id not in seen_item_ids:
                         if len(seen_item_ids) > 0:
@@ -84,32 +106,29 @@ def scrape_wallapop():
                             location = item.get("location", {}).get("city", "Barcelona")
                             
                             send_telegram_alert(title, price, item_url, location)
-                            print(f"🔥 Alert sent for: {title}", flush=True)
+                            print(f"🔥 Alert sent for: {title} (€{price})", flush=True)
                         
                         seen_item_ids.add(item_id)
             else:
-                print(f"Blocked or Error on '{keyword}': Status {response.status_code}", flush=True)
+                print(f"Blocked or Error on '{kw}': Status {response.status_code}", flush=True)
 
         except Exception as e:
-            print(f"Error scraping '{keyword}': {e}", flush=True)
+            print(f"Error scraping '{kw}': {e}", flush=True)
             
-        time.sleep(4)
+        # 2.5s delay per model to protect proxy IP reputation across 12 cycles
+        time.sleep(2.5)
 
 def engine_loop():
-    print("Wallapop Engine Started - TLS Bypass Enabled...", flush=True)
-    
-    # FORCED TEST PING
-    send_telegram_alert("⚡ SYSTEM TEST", "0", "https://es.wallapop.com", "Barcelona")
-    
+    print("Wallapop Engine Started - Scaled iPhone Sweep Active...", flush=True)
     while True:
         scrape_wallapop()
-        time.sleep(30)
+        # Rest 15 seconds after completing a full pass through all 12 models
+        time.sleep(15)
 
 if __name__ == "__main__":
-    # Start background scraper thread FIRST
+    # Launch scraper background thread before starting web server
     scraper_thread = threading.Thread(target=engine_loop, daemon=True)
     scraper_thread.start()
 
-    # Start Flask Webserver on main thread
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
